@@ -1249,6 +1249,7 @@ static enum blk_eh_timer_return nvme_timeout(struct request *req, bool reserved)
 	struct nvme_command cmd;
 	u32 csts = readl(dev->bar + NVME_REG_CSTS);
 
+	log_state_history(dev);
 	/*
 	 * Reset immediately if the controller is failed
 	 */
