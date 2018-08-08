@@ -2772,6 +2772,7 @@ static struct pci_driver nvme_driver = {
 
 static int __init nvme_init(void)
 {
+	printk("NVME_WITH_STATE");
 	return pci_register_driver(&nvme_driver);
 }
 
