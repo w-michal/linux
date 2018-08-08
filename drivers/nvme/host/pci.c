@@ -27,6 +27,7 @@
 #include <linux/pci.h>
 #include <linux/t10-pi.h>
 #include <linux/types.h>
+#include <linux/time.h>
 #include <linux/io-64-nonatomic-lo-hi.h>
 #include <linux/sed-opal.h>
 
@@ -71,6 +72,11 @@ struct nvme_queue;
 static void nvme_process_cq(struct nvme_queue *nvmeq);
 static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown);
 
+struct state_tracker {
+	struct timespec timestamp_;
+	u32 var[3];
+	u8  ev_id;
+};
 /*
  * Represents an NVM Express device.  Each nvme_dev is a PCI function.
  */
@@ -99,6 +105,8 @@ struct nvme_dev {
 	struct nvme_ctrl ctrl;
 	struct completion ioq_wait;
 
+	u8 next_state_index_;
+	struct state_tracker states_[128];
 	/* shadow doorbell buffer support: */
 	u32 *dbbuf_dbs;
 	dma_addr_t dbbuf_dbs_dma_addr;
@@ -284,15 +292,63 @@ static void nvme_dbbuf_set(struct nvme_dev *dev)
 	}
 }
 
-static inline int nvme_dbbuf_need_event(u16 event_idx, u16 new_idx, u16 old)
+static void add_state(struct nvme_dev *dev, u8 ev_id, u32 var0, u32 var1, u32 var2)
 {
+	dev->states_[dev->next_state_index_].timestamp_ =
+	  current_kernel_time();
+	dev->states_[dev->next_state_index_].ev_id = ev_id;
+	dev->states_[dev->next_state_index_].var[0] = var0;
+	dev->states_[dev->next_state_index_].var[1] = var1;
+	dev->states_[dev->next_state_index_].var[2] = var2;
+  //states_[next_state_index_].Set(state);
+	dev->next_state_index_++;
+  if (dev->next_state_index_ >= 128)
+      dev->next_state_index_ = 0;
+}
+
+static void log_state_history(struct nvme_dev *dev) {
+	struct timespec now_;
+	int i;
+
+	now_ = current_kernel_time();
+
+	dev_warn(dev->ctrl.device, "kt:%lld.%.9ld printing event history",
+		(long long)now_.tv_sec,now_.tv_nsec);
+
+
+  for (i = dev->next_state_index_; i < 128; ++i) {
+		dev_warn(dev->ctrl.device, "kt:%lld.%.9ld evid:%d var1:0x%x var2:0x%x var3:0x%x",
+			(long long)dev->states_[i].timestamp_.tv_sec,
+			dev->states_[i].timestamp_.tv_nsec,
+			dev->states_[i].ev_id,
+			dev->states_[i].var[0],
+			dev->states_[i].var[1],
+			dev->states_[i].var[2]);
+    //LOG(INFO) << states_[i].ToString();
+  }
+  for (i = 0; i < dev->next_state_index_; ++i) {
+		dev_warn(dev->ctrl.device, "kt:%lld.%.9ld evid:%d var1:0x%x var2:0x%x var3:0x%x",
+			(long long)dev->states_[i].timestamp_.tv_sec,
+			dev->states_[i].timestamp_.tv_nsec,
+			dev->states_[i].ev_id,
+			dev->states_[i].var[0],
+			dev->states_[i].var[1],
+			dev->states_[i].var[2]);
+    //LOG(INFO) << states_[i].ToString();
+  }
+}
+
+static inline int nvme_dbbuf_need_event(struct nvme_dev *dev, u16 event_idx, u16 new_idx, u16 old)
+{
+	add_state(dev, 3, event_idx, new_idx, old);
 	return (u16)(new_idx - event_idx - 1) < (u16)(new_idx - old);
 }
 
 /* Update dbbuf and return true if an MMIO is required */
-static bool nvme_dbbuf_update_and_check_event(u16 value, u32 *dbbuf_db,
+static bool nvme_dbbuf_update_and_check_event(struct nvme_dev* dev, u16 value, u32 *dbbuf_db,
 					      volatile u32 *dbbuf_ei)
 {
+	add_state(dev, 2, value, *dbbuf_db, *dbbuf_ei);
 	if (dbbuf_db) {
 		u16 old_value;
 
@@ -305,7 +361,8 @@ static bool nvme_dbbuf_update_and_check_event(u16 value, u32 *dbbuf_db,
 		old_value = *dbbuf_db;
 		*dbbuf_db = value;
 
-		if (!nvme_dbbuf_need_event(*dbbuf_ei, value, old_value))
+
+		if (!nvme_dbbuf_need_event(dev, *dbbuf_ei, value, old_value))
 			return false;
 	}
 
@@ -436,9 +493,13 @@ static void __nvme_submit_cmd(struct nvme_queue *nvmeq,
 
 	if (++tail == nvmeq->q_depth)
 		tail = 0;
-	if (nvme_dbbuf_update_and_check_event(tail, nvmeq->dbbuf_sq_db,
-					      nvmeq->dbbuf_sq_ei))
+	if (nvme_dbbuf_update_and_check_event(nvmeq->dev, tail, nvmeq->dbbuf_sq_db,
+																				nvmeq->dbbuf_sq_ei))
+	{
+		add_state(nvmeq->dev, 1, nvmeq->sq_tail, *nvmeq->q_db, 0);
 		writel(tail, nvmeq->q_db);
+	}
+
 	nvmeq->sq_tail = tail;
 }
 
@@ -922,10 +983,14 @@ static inline void nvme_ring_cq_doorbell(struct nvme_queue *nvmeq)
 {
 	u16 head = nvmeq->cq_head;
 
-	if (likely(nvmeq->cq_vector >= 0)) {
-		if (nvme_dbbuf_update_and_check_event(head, nvmeq->dbbuf_cq_db,
-						      nvmeq->dbbuf_cq_ei))
+	if (likely(nvmeq->cq_vector >= 0))
+	{
+		if (nvme_dbbuf_update_and_check_event(nvmeq->dev, head, nvmeq->dbbuf_cq_db,
+																					nvmeq->dbbuf_cq_ei))
+		{
+			add_state(nvmeq->dev, 4, *nvmeq->q_db, nvmeq->dev->db_stride, 0);
 			writel(head, nvmeq->q_db + nvmeq->dev->db_stride);
+		}
 	}
 }
 
