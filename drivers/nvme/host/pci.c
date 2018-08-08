@@ -2532,6 +2532,7 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		set_dev_node(&pdev->dev, first_memory_node);
 
 	dev = kzalloc_node(sizeof(*dev), GFP_KERNEL, node);
+	dev->next_state_index_ = 0;
 	if (!dev)
 		return -ENOMEM;
 	dev->queues = kzalloc_node((num_possible_cpus() + 1) * sizeof(void *),
