@@ -999,12 +999,11 @@ static inline void nvme_ring_cq_doorbell(struct nvme_queue *nvmeq)
 	u32 var0 = 0;
 	if (likely(nvmeq->cq_vector >= 0))
 	{
-		if (nvme_dbbuf_update_and_check_event(null, head, nvmeq->dbbuf_cq_db,
+		if (nvme_dbbuf_update_and_check_event(NULL, head, nvmeq->dbbuf_cq_db,
 																					nvmeq->dbbuf_cq_ei))
 		{
 			if (nvmeq->q_db != NULL)
 				var0 = *nvmeq->q_db;
-			add_state(nvmeq, 4, var0, nvmeq->dev->db_stride, 0);
 			writel(head, nvmeq->q_db + nvmeq->dev->db_stride);
 		}
 	}
