@@ -105,8 +105,6 @@ struct nvme_dev {
 	struct nvme_ctrl ctrl;
 	struct completion ioq_wait;
 
-	u8 next_state_index_;
-	struct state_tracker states_[128];
 	/* shadow doorbell buffer support: */
 	u32 *dbbuf_dbs;
 	dma_addr_t dbbuf_dbs_dma_addr;
@@ -173,6 +171,8 @@ struct nvme_queue {
 	u32 *dbbuf_cq_db;
 	u32 *dbbuf_sq_ei;
 	u32 *dbbuf_cq_ei;
+	u8 next_state_index_;
+	struct state_tracker states_[128];
 };
 
 /*
@@ -292,60 +292,61 @@ static void nvme_dbbuf_set(struct nvme_dev *dev)
 	}
 }
 
-static void add_state(struct nvme_dev *dev, u8 ev_id, u32 var0, u32 var1, u32 var2)
+static void add_state(struct nvme_queue *nvmeq, u8 ev_id, u32 var0, u32 var1, u32 var2)
 {
-	dev->states_[dev->next_state_index_].timestamp_ =
+	nvmeq->states_[nvmeq->next_state_index_].timestamp_ =
 	  current_kernel_time();
-	dev->states_[dev->next_state_index_].ev_id = ev_id;
-	dev->states_[dev->next_state_index_].var[0] = var0;
-	dev->states_[dev->next_state_index_].var[1] = var1;
-	dev->states_[dev->next_state_index_].var[2] = var2;
+	nvmeq->states_[nvmeq->next_state_index_].ev_id = ev_id;
+	nvmeq->states_[nvmeq->next_state_index_].var[0] = var0;
+	nvmeq->states_[nvmeq->next_state_index_].var[1] = var1;
+	nvmeq->states_[nvmeq->next_state_index_].var[2] = var2;
   //states_[next_state_index_].Set(state);
-	dev->next_state_index_++;
-  if (dev->next_state_index_ >= 128)
-      dev->next_state_index_ = 0;
+	nvmeq->next_state_index_++;
+  if (nvmeq->next_state_index_ >= 128)
+      nvmeq->next_state_index_ = 0;
 }
 
-static void log_state_history(struct nvme_dev *dev) {
+static void log_state_history(struct nvme_queue *nvmeq) {
 	struct timespec now_;
 	int i;
-
+	struct device *ddv;
+	ddv = nvmeq->dev->ctrl.device;
 	now_ = current_kernel_time();
 
-	dev_warn(dev->ctrl.device, "kt:%lld.%.9ld printing event history",
-		(long long)now_.tv_sec,now_.tv_nsec);
+	dev_warn(ddv, "kt:%lld.%.9ld printing event history for queue %d",
+		(long long)now_.tv_sec,now_.tv_nsec, nvmeq->qid);
 
 
-  for (i = dev->next_state_index_; i < 128; ++i) {
-		dev_warn(dev->ctrl.device, "kt:%lld.%.9ld evid:%d var1:0x%x var2:0x%x var3:0x%x",
-			(long long)dev->states_[i].timestamp_.tv_sec,
-			dev->states_[i].timestamp_.tv_nsec,
-			dev->states_[i].ev_id,
-			dev->states_[i].var[0],
-			dev->states_[i].var[1],
-			dev->states_[i].var[2]);
+  for (i = nvmeq->next_state_index_; i < 128; ++i) {
+		dev_warn(ddv, "kt:%lld.%.9ld evid:%d var0:0x%x var1:0x%x var2:0x%x",
+			(long long)nvmeq->states_[i].timestamp_.tv_sec,
+			nvmeq->states_[i].timestamp_.tv_nsec,
+			nvmeq->states_[i].ev_id,
+			nvmeq->states_[i].var[0],
+			nvmeq->states_[i].var[1],
+			nvmeq->states_[i].var[2]);
     //LOG(INFO) << states_[i].ToString();
   }
-  for (i = 0; i < dev->next_state_index_; ++i) {
-		dev_warn(dev->ctrl.device, "kt:%lld.%.9ld evid:%d var1:0x%x var2:0x%x var3:0x%x",
-			(long long)dev->states_[i].timestamp_.tv_sec,
-			dev->states_[i].timestamp_.tv_nsec,
-			dev->states_[i].ev_id,
-			dev->states_[i].var[0],
-			dev->states_[i].var[1],
-			dev->states_[i].var[2]);
-    //LOG(INFO) << states_[i].ToString();
+  for (i = 0; i < nvmeq->next_state_index_; ++i) {
+		dev_warn(ddv, "kt:%lld.%.9ld evid:%d var0:0x%x var1:0x%x var2:0x%x",
+			(long long)nvmeq->states_[i].timestamp_.tv_sec,
+			nvmeq->states_[i].timestamp_.tv_nsec,
+			nvmeq->states_[i].ev_id,
+			nvmeq->states_[i].var[0],
+			nvmeq->states_[i].var[1],
+			nvmeq->states_[i].var[2]);
+    //nvmeq(INFO) << states_[i].ToString();
   }
 }
 
-static inline int nvme_dbbuf_need_event(struct nvme_dev *dev, u16 event_idx, u16 new_idx, u16 old)
+static inline int nvme_dbbuf_need_event(struct nvme_queue *nvmeq, u16 event_idx, u16 new_idx, u16 old)
 {
-	add_state(dev, 3, event_idx, new_idx, old);
+	add_state(nvmeq, 3, event_idx, new_idx, old);
 	return (u16)(new_idx - event_idx - 1) < (u16)(new_idx - old);
 }
 
 /* Update dbbuf and return true if an MMIO is required */
-static bool nvme_dbbuf_update_and_check_event(struct nvme_dev* dev, u16 value, u32 *dbbuf_db,
+static bool nvme_dbbuf_update_and_check_event(struct nvme_queue *nvmeq, u16 value, u32 *dbbuf_db,
 					      volatile u32 *dbbuf_ei)
 {
 	u32 var1 = 0;
@@ -357,7 +358,7 @@ static bool nvme_dbbuf_update_and_check_event(struct nvme_dev* dev, u16 value, u
 	if (dbbuf_ei != NULL)
 		var2 = *dbbuf_ei;
 
-	add_state(dev, 2, value, var1, var2);
+	add_state(nvmeq, 2, value, var1, var2);
 	if (dbbuf_db) {
 		u16 old_value;
 
@@ -371,7 +372,7 @@ static bool nvme_dbbuf_update_and_check_event(struct nvme_dev* dev, u16 value, u
 		*dbbuf_db = value;
 
 
-		if (!nvme_dbbuf_need_event(dev, *dbbuf_ei, value, old_value))
+		if (!nvme_dbbuf_need_event(nvmeq, *dbbuf_ei, value, old_value))
 			return false;
 	}
 
@@ -502,12 +503,12 @@ static void __nvme_submit_cmd(struct nvme_queue *nvmeq,
 
 	if (++tail == nvmeq->q_depth)
 		tail = 0;
-	if (nvme_dbbuf_update_and_check_event(nvmeq->dev, tail, nvmeq->dbbuf_sq_db,
+	if (nvme_dbbuf_update_and_check_event(nvmeq, tail, nvmeq->dbbuf_sq_db,
 																				nvmeq->dbbuf_sq_ei))
 	{
 		if (nvmeq->q_db != NULL)
 			var1 = *nvmeq->q_db;
-		add_state(nvmeq->dev, 1, nvmeq->sq_tail, var1, 0);
+		add_state(nvmeq, 1, nvmeq->sq_tail, var1, 0);
 		writel(tail, nvmeq->q_db);
 	}
 
@@ -996,12 +997,12 @@ static inline void nvme_ring_cq_doorbell(struct nvme_queue *nvmeq)
 	u32 var0 = 0;
 	if (likely(nvmeq->cq_vector >= 0))
 	{
-		if (nvme_dbbuf_update_and_check_event(nvmeq->dev, head, nvmeq->dbbuf_cq_db,
+		if (nvme_dbbuf_update_and_check_event(nvmeq, head, nvmeq->dbbuf_cq_db,
 																					nvmeq->dbbuf_cq_ei))
 		{
 			if (nvmeq->q_db != NULL)
 				var0 = *nvmeq->q_db;
-			add_state(nvmeq->dev, 4, var0, nvmeq->dev->db_stride, 0);
+			add_state(nvmeq, 4, var0, nvmeq->dev->db_stride, 0);
 			writel(head, nvmeq->q_db + nvmeq->dev->db_stride);
 		}
 	}
@@ -1262,7 +1263,7 @@ static enum blk_eh_timer_return nvme_timeout(struct request *req, bool reserved)
 	struct nvme_command cmd;
 	u32 csts = readl(dev->bar + NVME_REG_CSTS);
 
-	log_state_history(dev);
+	log_state_history(nvmeq);
 	/*
 	 * Reset immediately if the controller is failed
 	 */
@@ -1476,7 +1477,7 @@ static struct nvme_queue *nvme_alloc_queue(struct nvme_dev *dev, int qid,
 
 	if (nvme_alloc_sq_cmds(dev, nvmeq, qid, depth))
 		goto free_cqdma;
-
+	nvmeq->next_state_index_ = 0;
 	nvmeq->q_dmadev = dev->dev;
 	nvmeq->dev = dev;
 	spin_lock_init(&nvmeq->q_lock);
@@ -2545,7 +2546,6 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		set_dev_node(&pdev->dev, first_memory_node);
 
 	dev = kzalloc_node(sizeof(*dev), GFP_KERNEL, node);
-	dev->next_state_index_ = 0;
 	if (!dev)
 		return -ENOMEM;
 	dev->queues = kzalloc_node((num_possible_cpus() + 1) * sizeof(void *),
