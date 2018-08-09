@@ -348,7 +348,16 @@ static inline int nvme_dbbuf_need_event(struct nvme_dev *dev, u16 event_idx, u16
 static bool nvme_dbbuf_update_and_check_event(struct nvme_dev* dev, u16 value, u32 *dbbuf_db,
 					      volatile u32 *dbbuf_ei)
 {
-	add_state(dev, 2, value, *dbbuf_db, *dbbuf_ei);
+	u32 var1 = 0;
+	u32 var2 = 0;
+
+	if (dbbuf_db != NULL)
+		var1 = *dbbuf_db;
+
+	if (dbbuf_ei != NULL)
+		var1 = *dbbuf_ei;
+
+	add_state(dev, 2, value, var1, var2);
 	if (dbbuf_db) {
 		u16 old_value;
 
@@ -485,7 +494,7 @@ static void __nvme_submit_cmd(struct nvme_queue *nvmeq,
 						struct nvme_command *cmd)
 {
 	u16 tail = nvmeq->sq_tail;
-
+	u32 var1 = 0;
 	if (nvmeq->sq_cmds_io)
 		memcpy_toio(&nvmeq->sq_cmds_io[tail], cmd, sizeof(*cmd));
 	else
@@ -496,7 +505,9 @@ static void __nvme_submit_cmd(struct nvme_queue *nvmeq,
 	if (nvme_dbbuf_update_and_check_event(nvmeq->dev, tail, nvmeq->dbbuf_sq_db,
 																				nvmeq->dbbuf_sq_ei))
 	{
-		add_state(nvmeq->dev, 1, nvmeq->sq_tail, *nvmeq->q_db, 0);
+		if (nvmeq->q_db != NULL)
+			var1 = *nvmeq->q_db;
+		add_state(nvmeq->dev, 1, nvmeq->sq_tail, var1, 0);
 		writel(tail, nvmeq->q_db);
 	}
 
@@ -982,13 +993,15 @@ static inline bool nvme_cqe_valid(struct nvme_queue *nvmeq, u16 head,
 static inline void nvme_ring_cq_doorbell(struct nvme_queue *nvmeq)
 {
 	u16 head = nvmeq->cq_head;
-
+	u32 var0 = 0;
 	if (likely(nvmeq->cq_vector >= 0))
 	{
 		if (nvme_dbbuf_update_and_check_event(nvmeq->dev, head, nvmeq->dbbuf_cq_db,
 																					nvmeq->dbbuf_cq_ei))
 		{
-			add_state(nvmeq->dev, 4, *nvmeq->q_db, nvmeq->dev->db_stride, 0);
+			if (nvmeq->q_db != NULL)
+				var0 = *nvmeq->q_db;
+			add_state(nvmeq->dev, 4, var0, nvmeq->dev->db_stride, 0);
 			writel(head, nvmeq->q_db + nvmeq->dev->db_stride);
 		}
 	}
