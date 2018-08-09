@@ -294,6 +294,8 @@ static void nvme_dbbuf_set(struct nvme_dev *dev)
 
 static void add_state(struct nvme_queue *nvmeq, u8 ev_id, u32 var0, u32 var1, u32 var2)
 {
+	if (nvmeq == NULL)
+		return;
 	nvmeq->states_[nvmeq->next_state_index_].timestamp_ =
 	  current_kernel_time();
 	nvmeq->states_[nvmeq->next_state_index_].ev_id = ev_id;
@@ -997,7 +999,7 @@ static inline void nvme_ring_cq_doorbell(struct nvme_queue *nvmeq)
 	u32 var0 = 0;
 	if (likely(nvmeq->cq_vector >= 0))
 	{
-		if (nvme_dbbuf_update_and_check_event(nvmeq, head, nvmeq->dbbuf_cq_db,
+		if (nvme_dbbuf_update_and_check_event(null, head, nvmeq->dbbuf_cq_db,
 																					nvmeq->dbbuf_cq_ei))
 		{
 			if (nvmeq->q_db != NULL)
