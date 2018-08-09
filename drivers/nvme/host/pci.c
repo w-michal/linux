@@ -355,7 +355,7 @@ static bool nvme_dbbuf_update_and_check_event(struct nvme_dev* dev, u16 value, u
 		var1 = *dbbuf_db;
 
 	if (dbbuf_ei != NULL)
-		var1 = *dbbuf_ei;
+		var2 = *dbbuf_ei;
 
 	add_state(dev, 2, value, var1, var2);
 	if (dbbuf_db) {
