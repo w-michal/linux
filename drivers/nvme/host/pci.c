@@ -343,7 +343,7 @@ static void log_state_history(struct nvme_queue *nvmeq) {
 
 static inline int nvme_dbbuf_need_event(struct nvme_queue *nvmeq, u16 event_idx, u16 new_idx, u16 old)
 {
-	// add_state(nvmeq, 3, event_idx, new_idx, old);
+	add_state(nvmeq, 3, event_idx, new_idx, old);
 	return (u16)(new_idx - event_idx - 1) < (u16)(new_idx - old);
 }
 
@@ -377,7 +377,7 @@ static bool nvme_dbbuf_update_and_check_event(struct nvme_queue *nvmeq, u16 valu
 		 * Ensure that dereference of dbbuf_ei happens after
 		 * write to dbbuf_db
 		 */
-		wmb();
+		mb();
 
 		if (!nvme_dbbuf_need_event(nvmeq, *dbbuf_ei, value, old_value))
 			return false;
